@@ -10,25 +10,23 @@ import (
 )
 
 type Base struct {
-	gvr             schema.GroupVersionResource
-	namespaced      bool
-	needUpdate      NeedUpdateFunc
-	storage         []Dao
-	onAdd           EventHandler
-	onUpdate        EventHandler
-	onDelete        EventDeleteHandler
-	toModel         func(*unstructured.Unstructured) BaseModel
-	extraConditions map[string]any
-	query           func(context.Context) *gorm.DB
-	setExtraFields  func(context.Context, *DynamicModel)
+	gvr        schema.GroupVersionResource
+	clusterID  string
+	namespaced bool
+	needUpdate NeedUpdateFunc
+	storage    []Dao
+	onAdd      EventHandler
+	onUpdate   EventHandler
+	onDelete   EventDeleteHandler
 }
 
 // Option 定义选项函数类型
 type Option func(*Base)
 
 // NewBase 创建默认Base实例并应用选项
-func NewBase(gvr schema.GroupVersionResource, namespaced bool, opts ...Option) Unit {
+func NewBase(clusterID string, gvr schema.GroupVersionResource, namespaced bool, opts ...Option) Unit {
 	b := &Base{
+		clusterID:  clusterID,
 		gvr:        gvr,
 		namespaced: namespaced,
 		onAdd:      DefaultAddFN,
@@ -79,18 +77,6 @@ func WithOnDelete(fn EventDeleteHandler) Option {
 	}
 }
 
-func WithToModel(fn func(*unstructured.Unstructured) BaseModel) Option {
-	return func(b *Base) {
-		b.toModel = fn
-	}
-}
-
-func WithExtraConditions(extraConditions map[string]any) Option {
-	return func(b *Base) {
-		b.extraConditions = extraConditions
-	}
-}
-
 func (b *Base) GetGVR() schema.GroupVersionResource {
 	return b.gvr
 }
@@ -136,7 +122,7 @@ var DefaultAddFN = DefaultAdd
 func DefaultAdd(ctx context.Context, ctrl *Controller, storages []Dao, obj *unstructured.Unstructured) error {
 	for _, storage := range storages {
 		// 查询是否存在
-		model, err := storage.Find(ctx, obj.GetNamespace(), obj.GetName())
+		model, err := storage.First(ctx, obj.GetNamespace(), obj.GetName())
 		if err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				// 不存在则创建

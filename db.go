@@ -28,7 +28,6 @@ type DynamicModel struct {
 	Annotations     string `gorm:"column:Annotations;type:text"`
 	Raw             string `gorm:"column:Raw;type:text"`
 	ClusterID       string `gorm:"column:ClusterID;size:255;uniqueIndex:idx_uid"`
-	TenantID        string `gorm:"column:TenantID;size:255;uniqueIndex:idx_uid"`
 }
 
 // TableName 动态生成表名，格式: gvk_group_version_kind
@@ -41,7 +40,7 @@ func (dm *DynamicModel) TableName() string {
 }
 
 func (dm *DynamicModel) UniqueKey() string {
-	return fmt.Sprintf("%s-%s-%s", dm.Name, dm.ClusterID, dm.TenantID)
+	return fmt.Sprintf("%s-%s-%s", dm.Name, dm.ClusterID)
 }
 
 func (dm *DynamicModel) ToUnstructured() (*unstructured.Unstructured, error) {

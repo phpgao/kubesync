@@ -21,6 +21,7 @@ import (
 
 type Controller struct {
 	name       string
+	clusterID  string
 	gvr        schema.GroupVersionResource
 	namespaced bool
 	informer   informers.GenericInformer

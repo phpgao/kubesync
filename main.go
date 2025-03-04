@@ -29,7 +29,7 @@ func main() {
 		klog.Fatal(err)
 	}
 
-	manager := NewControllerManager(config)
+	manager := NewControllerManager("cls-test", config)
 
 	manager.AddDependency(CoreV1Pod, []schema.GroupVersionResource{AppsV1Deployment, AppsV1ReplicaSet})
 	//manager.AddDependency(AppsV1Deployment, []schema.GroupVersionResource{CoreV1Pod})

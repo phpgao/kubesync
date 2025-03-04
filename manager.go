@@ -27,6 +27,7 @@ import (
 )
 
 type ControllerManager struct {
+	clusterID     string
 	mu            sync.Mutex
 	config        *rest.Config
 	dynamicClient dynamic.Interface
@@ -41,22 +42,18 @@ type ControllerManager struct {
 	daoMap        map[schema.GroupVersionResource][]Dao
 	daoMu         sync.RWMutex
 	defaultDao    []Dao
-	extraInfo     map[string]any
 	InClusterMode bool
 }
 
-func NewControllerManager(config *rest.Config) *ControllerManager {
+func NewControllerManager(clusterID string, config *rest.Config) *ControllerManager {
 	return &ControllerManager{
+		clusterID:     clusterID,
 		config:        config,
 		controllers:   make(map[schema.GroupVersionResource]*Controller),
 		handlerMap:    sync.Map{},
 		needUpdateMap: sync.Map{},
 		whitelist:     make(map[schema.GroupVersionResource]struct{}),
 		dependencyMap: make(map[schema.GroupVersionResource][]schema.GroupVersionResource),
-		extraInfo: map[string]any{
-			"ClusterID": "cls-ccc",
-			"TenantID":  "333222",
-		},
 	}
 }
 
@@ -183,7 +180,7 @@ func (cm *ControllerManager) createControllerForGVR(gvr schema.GroupVersionResou
 		},
 	)
 
-	unit := NewBase(gvr, namespaced, WithStorage(cm.GetDao(gvr, namespaced)))
+	unit := NewBase(cm.clusterID, gvr, namespaced, WithStorage(cm.GetDao(gvr, namespaced)))
 
 	ctrl := &Controller{
 		cm:         cm,
@@ -195,6 +192,7 @@ func (cm *ControllerManager) createControllerForGVR(gvr schema.GroupVersionResou
 		queue:      queue,
 		dependency: cm.GetDependency(gvr),
 		unit:       unit,
+		clusterID:  cm.clusterID,
 	}
 
 	_, err := informer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
@@ -271,9 +269,8 @@ func (cm *ControllerManager) GetDao(gvr schema.GroupVersionResource, namespaced 
 	}
 
 	if gvr == CoreV1Pod {
-		return NewDao(db.Debug(), gvr, namespaced, cm.extraInfo, func(ctx context.Context, model *DynamicModel, obj *unstructured.Unstructured) BaseModel {
+		return NewDao(cm.clusterID, db.Debug(), gvr, namespaced, func(ctx context.Context, model *DynamicModel, obj *unstructured.Unstructured) BaseModel {
 			if obj == nil {
-				log.Printf("---------------------------\n")
 				return &Pod{
 					DynamicModel: *model,
 					Phase:        "",
@@ -293,7 +290,7 @@ func (cm *ControllerManager) GetDao(gvr schema.GroupVersionResource, namespaced 
 		})
 	}
 
-	return NewDao(db.Debug(), gvr, namespaced, cm.extraInfo, nil)
+	return NewDao(cm.clusterID, db.Debug(), gvr, namespaced, nil)
 }
 
 type Pod struct {

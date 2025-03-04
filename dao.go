@@ -15,7 +15,8 @@ import (
 
 type Dao interface {
 	AutoMigrate(context.Context) error
-	Find(context.Context, string, string) (BaseModel, error)
+	First(context.Context, string, string) (BaseModel, error)
+	Find(context.Context) ([]BaseModel, error)
 	Save(context.Context, *unstructured.Unstructured) error
 	Create(context.Context, *unstructured.Unstructured) error
 	Delete(context.Context, string, string) error
@@ -26,22 +27,36 @@ type Dao interface {
 	NeedUpdate(ctx context.Context, new *unstructured.Unstructured, old any) bool
 }
 
-func NewDao(db *gorm.DB, gvr schema.GroupVersionResource, namespaced bool, extraFields map[string]any, realModelFn func(ctx context.Context, model *DynamicModel, obj *unstructured.Unstructured) BaseModel) Dao {
+func NewDao(clusterID string, db *gorm.DB, gvr schema.GroupVersionResource, namespaced bool, realModelFn func(ctx context.Context, model *DynamicModel, obj *unstructured.Unstructured) BaseModel) Dao {
 	return &dao{
+		clusterID:   clusterID,
 		db:          db,
 		gvr:         gvr,
 		namespaced:  namespaced,
-		extraFields: extraFields,
 		realModelFn: realModelFn,
 	}
 }
 
 type dao struct {
+	clusterID   string
 	db          *gorm.DB
 	gvr         schema.GroupVersionResource
 	namespaced  bool
-	extraFields map[string]any
 	realModelFn func(ctx context.Context, model *DynamicModel, obj *unstructured.Unstructured) BaseModel
+}
+
+func (d *dao) Find(ctx context.Context) ([]BaseModel, error) {
+	model := d.GetModel(ctx, nil)
+	// 使用反射创建对应类型的切片指针
+	modelType := reflect.TypeOf(model)
+	sliceType := reflect.SliceOf(modelType)
+	slicePtr := reflect.New(sliceType)
+	// 执行数据库查询
+	if err := d.db.Where("ClusterID = ?", d.clusterID).Find(slicePtr.Interface()).Error; err != nil {
+		return nil, err
+	}
+
+	return slicePtr.Interface().([]BaseModel), nil
 }
 
 func (d *dao) GetModel(ctx context.Context, obj *unstructured.Unstructured) BaseModel {
@@ -81,6 +96,7 @@ func (d *dao) GetModel(ctx context.Context, obj *unstructured.Unstructured) Base
 		Model: gorm.Model{
 			CreatedAt: createAt,
 		},
+		ClusterID:       d.clusterID,
 		Name:            name,
 		NameSpace:       namespace,
 		Labels:          labels,
@@ -92,27 +108,7 @@ func (d *dao) GetModel(ctx context.Context, obj *unstructured.Unstructured) Base
 		ResourceVersion: resourceVersion,
 	}
 
-	// 使用反射设置extraFields
-	if len(d.extraFields) > 0 {
-		modelValue := reflect.ValueOf(&baseModel).Elem()
-		modelType := modelValue.Type()
-
-		for i := 0; i < modelValue.NumField(); i++ {
-			fieldName := modelType.Field(i).Name
-			if value, exists := d.extraFields[fieldName]; exists {
-				fieldValue := modelValue.FieldByName(fieldName)
-				if fieldValue.IsValid() && fieldValue.CanSet() {
-					val := reflect.ValueOf(value)
-					if val.Type().AssignableTo(fieldValue.Type()) {
-						fieldValue.Set(val)
-					}
-				}
-			}
-		}
-	}
-
 	if d.realModelFn != nil {
-		log.Printf("realModelFn")
 		return d.realModelFn(ctx, &baseModel, obj)
 	}
 
@@ -138,17 +134,15 @@ func (d *dao) TableName(ctx context.Context) string {
 }
 
 func (d *dao) GetWhere(ctx context.Context, namespace string, name string) *gorm.DB {
-	query := d.db.WithContext(ctx).Table(d.TableName(ctx)).Where("name = ?", name)
+	query := d.db.WithContext(ctx).Table(d.TableName(ctx)).Where("name = ?", name).
+		Where("ClusterID = ?", d.clusterID)
 	if d.namespaced {
 		query = query.Where("namespace = ?", namespace)
-	}
-	if d.extraFields != nil {
-		query = query.Where(d.extraFields)
 	}
 	return query
 }
 
-func (d *dao) Find(ctx context.Context, namespace string, name string) (BaseModel, error) {
+func (d *dao) First(ctx context.Context, namespace string, name string) (BaseModel, error) {
 	model := d.GetModel(ctx, nil)
 	query := d.GetWhere(ctx, namespace, name)
 	return model, query.First(model).Error
