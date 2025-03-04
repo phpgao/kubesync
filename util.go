@@ -1,11 +1,6 @@
 package main
 
 import (
-	"context"
-	"fmt"
-	"log"
-
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 )
 
@@ -44,49 +39,6 @@ func HasCycle(depMap map[schema.GroupVersionResource][]schema.GroupVersionResour
 		}
 	}
 	return false
-}
-
-var DefaultHandler = Handler
-
-func Handler(ctx context.Context, ctrl *Controller, action string, obj *unstructured.Unstructured) error {
-	log.Printf("Controller %s received %s event for %s/%s\n", ctrl.name, action, obj.GetNamespace(), obj.GetName())
-	//dao := NewDao()
-	switch action {
-	case ActionAdd:
-		for _, dao := range ctrl.dao {
-			err := dao.Create(ctx, obj)
-			if err != nil {
-				return err
-			}
-		}
-
-		//// 是否已经存在
-		//dbData, err := dao.Find(context.Background(), ctrl.GetGVR(), obj.GetNamespace(), obj.GetName())
-		//if err != nil {
-		//	return err
-		//}
-		//if dbData != nil {
-		//	// 如果存在，进行更新
-		//	return dao.Save(context.Background(), ctrl.GetGVR(), obj)
-		//}
-	case ActionUpdate:
-	case ActionDelete:
-	default:
-		return fmt.Errorf("unknown action: %s", action)
-	}
-	return nil
-}
-
-var DefaultNeedUpdate = NeedUpdate
-
-func NeedUpdate(old, new *unstructured.Unstructured) bool {
-	return old.GetResourceVersion() != new.GetResourceVersion()
-}
-
-var DefaultUniqueFunc = Unique
-
-func Unique(obj *unstructured.Unstructured, namespaced bool) string {
-	return fmt.Sprintf("%s/%s", obj.GetNamespace(), obj.GetName())
 }
 
 // 添加辅助函数

@@ -2,106 +2,175 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"log"
+	"reflect"
+	"time"
 
 	"gorm.io/gorm"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 )
 
-func NewDao(db *gorm.DB, modelFunc func(*unstructured.Unstructured) Unstructured, extraCondition map[string]any) ResourceStorage {
-	//dsn := "root:fdj68Sbyj4S6QLf@tcp(9.134.107.122:3306)/cmdb?charset=utf8mb4&parseTime=True&loc=Local"
-	//db, err := gorm.Open(mysql.Open(dsn), &gorm.Config{})
-	//if err != nil {
-	//	panic(err)
-	//}
-	return &Dao{
-		db:             db,
-		modelFunc:      modelFunc,
-		extraCondition: extraCondition,
+type Dao interface {
+	AutoMigrate(context.Context) error
+	Find(context.Context, string, string) (BaseModel, error)
+	Save(context.Context, *unstructured.Unstructured) error
+	Create(context.Context, *unstructured.Unstructured) error
+	Delete(context.Context, string, string) error
+	// NeedUpdate returns true if the object needs to be updated
+	// It's Useful for update new field
+	// in this function you need to compare the new object and the old data in db
+	// if the new object is different from the old data in db, return true
+	NeedUpdate(ctx context.Context, new *unstructured.Unstructured, old any) bool
+}
+
+func NewDao(db *gorm.DB, gvr schema.GroupVersionResource, namespaced bool, extraFields map[string]any, realModelFn func(ctx context.Context, model *DynamicModel, obj *unstructured.Unstructured) BaseModel) Dao {
+	return &dao{
+		db:          db,
+		gvr:         gvr,
+		namespaced:  namespaced,
+		extraFields: extraFields,
+		realModelFn: realModelFn,
 	}
 }
 
-type Dao struct {
-	db             *gorm.DB
-	modelFunc      func(*unstructured.Unstructured) Unstructured
-	extraCondition map[string]any
-	query          func(context.Context, *gorm.DB, *unstructured.Unstructured) *gorm.DB
-	simpleQuery    func(context.Context, string, string) *gorm.DB
+type dao struct {
+	db          *gorm.DB
+	gvr         schema.GroupVersionResource
+	namespaced  bool
+	extraFields map[string]any
+	realModelFn func(ctx context.Context, model *DynamicModel, obj *unstructured.Unstructured) BaseModel
 }
 
-func (d Dao) AutoMigrate(ctx context.Context) error {
-	model := d.modelFunc(nil)
-	return d.db.Table(model.TableName()).AutoMigrate(&NamespacedDynamicModel{})
+func (d *dao) GetModel(ctx context.Context, obj *unstructured.Unstructured) BaseModel {
+	var (
+		name            string
+		namespace       string
+		raw             string
+		resourceVersion string
+		uid             string
+		labels          string
+		annotations     string
+		createAt        time.Time
+	)
 
-}
-
-func (d Dao) Find(ctx context.Context, namespace string, name string) (*unstructured.Unstructured, error) {
-	model := d.modelFunc(nil)
-	err := d.query(ctx, d.db, nil).Where("namespace = ?", namespace).Where("name = ?", name).Find(model).Error
-	if err != nil {
-		return nil, err
-	}
-	return model.ToUnstructured()
-}
-
-func (d Dao) Create(ctx context.Context, object *unstructured.Unstructured) error {
-	model := d.modelFunc(object)
-	query := d.db.WithContext(ctx).Table(model.TableName())
-	return query.Create(model).Error
-}
-
-func (d Dao) Save(ctx context.Context, object *unstructured.Unstructured) error {
-	model := d.modelFunc(object)
-	return d.query(ctx, d.db, object).Model(model).Updates(model).Error
-}
-
-func (d Dao) Delete(ctx context.Context, object *unstructured.Unstructured) error {
-	model := d.modelFunc(object)
-	return d.query(ctx, d.db, object).Delete(model).Error
-}
-
-func (d Dao) NeedUpdate(ctx context.Context, new *unstructured.Unstructured, old any) bool {
-	return true
-}
-
-func getModel(gvr schema.GroupVersionResource, namespaced bool, object *unstructured.Unstructured) Unstructured {
-	if namespaced {
-		if object != nil {
-			marshalJSON, err := object.MarshalJSON()
-			if err != nil {
-				return nil
-			}
-			return &NamespacedDynamicModel{
-				DynamicModel: DynamicModel{
-					Name:     object.GetName(),
-					Raw:      string(marshalJSON),
-					Version:  gvr.Version,
-					Resource: gvr.Resource,
-				},
-				Namespace: object.GetNamespace(),
-			}
-		}
-		return &NamespacedDynamicModel{
-			DynamicModel: DynamicModel{
-				Version:  gvr.Version,
-				Resource: gvr.Resource,
-			},
-		}
-	}
-	if object != nil {
-		marshalJSON, err := object.MarshalJSON()
+	if obj != nil {
+		marshalJSON, err := obj.MarshalJSON()
 		if err != nil {
 			return nil
 		}
-		return &DynamicModel{
-			Name:     object.GetName(),
-			Raw:      string(marshalJSON),
-			Version:  gvr.Version,
-			Resource: gvr.Resource,
+		name = obj.GetName()
+		namespace = obj.GetNamespace()
+		resourceVersion = obj.GetResourceVersion()
+		if labelsMap := obj.GetLabels(); labelsMap != nil {
+			labels = MustJson(labelsMap)
+		}
+		if annotationsMap := obj.GetAnnotations(); annotationsMap != nil {
+			annotations = MustJson(annotationsMap)
+		}
+
+		obj.GetCreationTimestamp()
+		createAt = obj.GetCreationTimestamp().Time
+		uid = string(obj.GetUID())
+		raw = string(marshalJSON)
+	}
+
+	baseModel := DynamicModel{
+		Model: gorm.Model{
+			CreatedAt: createAt,
+		},
+		Name:            name,
+		NameSpace:       namespace,
+		Labels:          labels,
+		Annotations:     annotations,
+		Raw:             raw,
+		Version:         d.gvr.Version,
+		Resource:        d.gvr.Resource,
+		UID:             uid,
+		ResourceVersion: resourceVersion,
+	}
+
+	// 使用反射设置extraFields
+	if len(d.extraFields) > 0 {
+		modelValue := reflect.ValueOf(&baseModel).Elem()
+		modelType := modelValue.Type()
+
+		for i := 0; i < modelValue.NumField(); i++ {
+			fieldName := modelType.Field(i).Name
+			if value, exists := d.extraFields[fieldName]; exists {
+				fieldValue := modelValue.FieldByName(fieldName)
+				if fieldValue.IsValid() && fieldValue.CanSet() {
+					val := reflect.ValueOf(value)
+					if val.Type().AssignableTo(fieldValue.Type()) {
+						fieldValue.Set(val)
+					}
+				}
+			}
 		}
 	}
-	return &DynamicModel{
-		Version:  gvr.Version,
-		Resource: gvr.Resource,
+
+	if d.realModelFn != nil {
+		log.Printf("realModelFn")
+		return d.realModelFn(ctx, &baseModel, obj)
 	}
+
+	return &baseModel
+}
+
+func MustJson(data any) string {
+	marshal, err := json.Marshal(data)
+	if err != nil {
+		return fmt.Sprintf("error: %v", err)
+	}
+	return string(marshal)
+}
+
+func (d *dao) AutoMigrate(ctx context.Context) error {
+	model := d.GetModel(ctx, nil)
+	log.Println(MustJson(model))
+	return d.db.Table(model.TableName()).AutoMigrate(d.GetModel(ctx, nil))
+}
+
+func (d *dao) TableName(ctx context.Context) string {
+	return d.GetModel(ctx, nil).TableName()
+}
+
+func (d *dao) GetWhere(ctx context.Context, namespace string, name string) *gorm.DB {
+	query := d.db.WithContext(ctx).Table(d.TableName(ctx)).Where("name = ?", name)
+	if d.namespaced {
+		query = query.Where("namespace = ?", namespace)
+	}
+	if d.extraFields != nil {
+		query = query.Where(d.extraFields)
+	}
+	return query
+}
+
+func (d *dao) Find(ctx context.Context, namespace string, name string) (BaseModel, error) {
+	model := d.GetModel(ctx, nil)
+	query := d.GetWhere(ctx, namespace, name)
+	return model, query.First(model).Error
+}
+
+func (d *dao) Save(ctx context.Context, u *unstructured.Unstructured) error {
+	model := d.GetModel(ctx, u)
+	query := d.GetWhere(ctx, u.GetNamespace(), u.GetName())
+	return query.Updates(model).Error
+}
+
+func (d *dao) Create(ctx context.Context, u *unstructured.Unstructured) error {
+	model := d.GetModel(ctx, u)
+	return d.db.WithContext(ctx).Table(d.TableName(ctx)).Create(model).Error
+}
+
+func (d *dao) Delete(ctx context.Context, namespace string, name string) error {
+	model := d.GetModel(ctx, nil)
+	query := d.GetWhere(ctx, namespace, name)
+	return query.Delete(model).Error
+}
+
+func (d *dao) NeedUpdate(ctx context.Context, new *unstructured.Unstructured, old any) bool {
+	return true
 }

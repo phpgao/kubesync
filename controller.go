@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	apiserror "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -25,13 +26,10 @@ type Controller struct {
 	informer   informers.GenericInformer
 	lister     cache.GenericLister
 	queue      workqueue.TypedRateLimitingInterface[string]
-	handler    HandlerFunc
-	needUpdate NeedUpdateFunc
 	cm         *ControllerManager
 	dependency []schema.GroupVersionResource
 	ready      bool
-	dao        []ResourceStorage
-	baby       *Base
+	unit       Unit
 }
 
 func generateKey(action string, obj metav1.Object) string {
@@ -94,7 +92,7 @@ func (c *Controller) onAdd(obj interface{}) {
 func (c *Controller) onUpdate(oldObj, newObj interface{}) {
 	newObject := newObj.(*unstructured.Unstructured)
 	oldObject := oldObj.(*unstructured.Unstructured)
-	if !c.needUpdate(oldObject, newObject) {
+	if !c.unit.GetNeedUpdate(oldObject, newObject) {
 		return
 	}
 	log.Println(c.name + generateKey(ActionUpdate, newObject))
@@ -112,10 +110,12 @@ func (c *Controller) onDelete(obj interface{}) {
 
 func (c *Controller) Run(ctx context.Context) {
 
-	for _, dao := range c.dao {
-		err := dao.AutoMigrate(ctx)
+	for _, storage := range c.unit.GetStorage() {
+
+		err := storage.AutoMigrate(ctx)
 		if err != nil {
-			log.Fatal(err)
+			log.Println(err)
+			continue
 		}
 	}
 
@@ -165,18 +165,23 @@ func (c *Controller) processNextItem() bool {
 	} else {
 		obj, err = c.lister.Get(name)
 	}
+	log.Println(key)
 	if err != nil {
-		c.queue.AddRateLimited(key)
-		return true
+		if apiserror.IsNotFound(err) {
+			action = ActionDelete
+		} else {
+			c.queue.AddRateLimited(key)
+			return true
+		}
 	}
 	ctx := context.Background()
 	switch action {
 	case ActionAdd:
-		err = c.baby.OnAdd(ctx, c, obj.(*unstructured.Unstructured))
+		err = c.unit.OnAdd(ctx, c, obj.(*unstructured.Unstructured))
 	case ActionUpdate:
-		err = c.baby.OnUpdate(ctx, c, obj.(*unstructured.Unstructured))
+		err = c.unit.OnUpdate(ctx, c, obj.(*unstructured.Unstructured))
 	case ActionDelete:
-		err = c.baby.OnDelete(ctx, c, obj.(*unstructured.Unstructured))
+		err = c.unit.OnDelete(ctx, c.unit.GetStorage(), namespace, name)
 	default:
 		err = fmt.Errorf("unknown action: %s", action)
 	}

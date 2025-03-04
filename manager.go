@@ -8,7 +8,12 @@ import (
 	"sync"
 	"time"
 
+	"gorm.io/driver/mysql"
+	"gorm.io/gorm"
+	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/dynamic/dynamicinformer"
@@ -29,14 +34,14 @@ type ControllerManager struct {
 	controllers   map[schema.GroupVersionResource]*Controller
 	handlerMap    sync.Map
 	needUpdateMap sync.Map
-	blacklist     map[schema.GroupVersionResource]struct{}
-	blacklistMu   sync.RWMutex
+	whitelist     map[schema.GroupVersionResource]struct{}
+	whitelistMu   sync.RWMutex
 	dependencyMap map[schema.GroupVersionResource][]schema.GroupVersionResource
 	dependencyMu  sync.RWMutex
-	daoMap        map[schema.GroupVersionResource][]ResourceStorage
+	daoMap        map[schema.GroupVersionResource][]Dao
 	daoMu         sync.RWMutex
-	defaultDao    []ResourceStorage
-	extraInfo     map[string]string
+	defaultDao    []Dao
+	extraInfo     map[string]any
 	InClusterMode bool
 }
 
@@ -46,9 +51,12 @@ func NewControllerManager(config *rest.Config) *ControllerManager {
 		controllers:   make(map[schema.GroupVersionResource]*Controller),
 		handlerMap:    sync.Map{},
 		needUpdateMap: sync.Map{},
-		blacklist:     make(map[schema.GroupVersionResource]struct{}),
+		whitelist:     make(map[schema.GroupVersionResource]struct{}),
 		dependencyMap: make(map[schema.GroupVersionResource][]schema.GroupVersionResource),
-		extraInfo:     map[string]string{},
+		extraInfo: map[string]any{
+			"ClusterID": "cls-ccc",
+			"TenantID":  "333222",
+		},
 	}
 }
 
@@ -59,40 +67,6 @@ func (cm *ControllerManager) GetController(gvr schema.GroupVersionResource) *Con
 		return ctrl
 	}
 	return nil
-}
-
-func (cm *ControllerManager) RegisterHandler(gvr schema.GroupVersionResource, handler HandlerFunc) {
-	cm.handlerMap.Store(gvr, handler)
-}
-
-func (cm *ControllerManager) RegisterDao(gvr schema.GroupVersionResource, dbHandler []ResourceStorage) {
-	cm.daoMu.Lock()
-	defer cm.daoMu.Unlock()
-	cm.daoMap[gvr] = append(cm.daoMap[gvr], dbHandler...)
-}
-
-func (cm *ControllerManager) GetDao(gvr schema.GroupVersionResource) []ResourceStorage {
-	cm.daoMu.Lock()
-	defer cm.daoMu.Unlock()
-	if handler, ok := cm.daoMap[gvr]; ok {
-		return handler
-	}
-	return cm.getDefaultDao()
-}
-
-func (cm *ControllerManager) getDefaultDao() []ResourceStorage {
-	return cm.defaultDao
-}
-
-func (cm *ControllerManager) AddDefaultDao(dbHandler ResourceStorage) {
-	cm.defaultDao = append(cm.defaultDao, dbHandler)
-}
-
-func (cm *ControllerManager) GetHandler(gvr schema.GroupVersionResource) HandlerFunc {
-	if handler, ok := cm.handlerMap.Load(gvr); ok {
-		return handler.(HandlerFunc)
-	}
-	return DefaultHandler
 }
 
 func (cm *ControllerManager) AddDependency(gvr schema.GroupVersionResource, dependencies []schema.GroupVersionResource) {
@@ -129,13 +103,6 @@ func (cm *ControllerManager) RegisterNeedUpdate(gvr schema.GroupVersionResource,
 	cm.handlerMap.Store(gvr, handler)
 }
 
-func (cm *ControllerManager) GetNeedUpdate(gvr schema.GroupVersionResource) NeedUpdateFunc {
-	if handler, ok := cm.needUpdateMap.Load(gvr); ok {
-		return handler.(NeedUpdateFunc)
-	}
-	return DefaultNeedUpdate
-}
-
 func (cm *ControllerManager) Start(ctx context.Context) error {
 	var err error
 	cm.kubeClient, err = kubernetes.NewForConfig(cm.config)
@@ -169,7 +136,7 @@ func (cm *ControllerManager) Start(ctx context.Context) error {
 			gvr := gv.WithResource(resource.Name)
 			// 黑名单检查
 			log.Printf("check blacklist for %s\n", gvr.String())
-			if cm.isBlacklisted(gvr) {
+			if !cm.isWhitelisted(gvr) {
 				log.Printf("Skipping blacklisted GVR: %s\n", gvr)
 				continue
 			}
@@ -182,6 +149,7 @@ func (cm *ControllerManager) Start(ctx context.Context) error {
 				continue
 			}
 			cm.createControllerForGVR(gvr, resource.Namespaced)
+
 		}
 	}
 
@@ -215,8 +183,7 @@ func (cm *ControllerManager) createControllerForGVR(gvr schema.GroupVersionResou
 		},
 	)
 
-	handler := cm.GetHandler(gvr)
-	needUpdate := cm.GetNeedUpdate(gvr)
+	unit := NewBase(gvr, namespaced, WithStorage(cm.GetDao(gvr, namespaced)))
 
 	ctrl := &Controller{
 		cm:         cm,
@@ -226,10 +193,8 @@ func (cm *ControllerManager) createControllerForGVR(gvr schema.GroupVersionResou
 		informer:   informer,
 		lister:     informer.Lister(),
 		queue:      queue,
-		handler:    handler,
-		needUpdate: needUpdate,
 		dependency: cm.GetDependency(gvr),
-		dao:        cm.getDefaultDao(),
+		unit:       unit,
 	}
 
 	_, err := informer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
@@ -283,18 +248,55 @@ func (cm *ControllerManager) startControllers(ctx context.Context) {
 	}
 }
 
-// RegisterBlacklist 添加黑名单注册方法
-func (cm *ControllerManager) RegisterBlacklist(gvr schema.GroupVersionResource) {
+// RegisterWhitelist 添加白名单
+func (cm *ControllerManager) RegisterWhitelist(gvr schema.GroupVersionResource) {
 	log.Printf("Registering blacklist for %s\n", gvr.String())
-	cm.blacklistMu.Lock()
-	defer cm.blacklistMu.Unlock()
-	cm.blacklist[gvr] = struct{}{}
+	cm.whitelistMu.Lock()
+	defer cm.whitelistMu.Unlock()
+	cm.whitelist[gvr] = struct{}{}
 }
 
-// isBlacklisted 检查是否在黑名单中
-func (cm *ControllerManager) isBlacklisted(gvr schema.GroupVersionResource) bool {
-	cm.blacklistMu.RLock()
-	defer cm.blacklistMu.RUnlock()
-	_, ok := cm.blacklist[gvr]
+// isWhitelisted 检查是否在白名单中
+func (cm *ControllerManager) isWhitelisted(gvr schema.GroupVersionResource) bool {
+	cm.whitelistMu.RLock()
+	defer cm.whitelistMu.RUnlock()
+	_, ok := cm.whitelist[gvr]
 	return ok
+}
+
+func (cm *ControllerManager) GetDao(gvr schema.GroupVersionResource, namespaced bool) Dao {
+	db, err := gorm.Open(mysql.Open(dsn), &gorm.Config{})
+	if err != nil {
+		panic(err)
+	}
+
+	if gvr == CoreV1Pod {
+		return NewDao(db.Debug(), gvr, namespaced, cm.extraInfo, func(ctx context.Context, model *DynamicModel, obj *unstructured.Unstructured) BaseModel {
+			if obj == nil {
+				log.Printf("---------------------------\n")
+				return &Pod{
+					DynamicModel: *model,
+					Phase:        "",
+				}
+			}
+			pod := &v1.Pod{}
+			err = runtime.DefaultUnstructuredConverter.FromUnstructured(obj.Object, pod)
+			if err != nil {
+				log.Printf(err.Error())
+			}
+			podModel := &Pod{
+				DynamicModel: *model,
+				Phase:        string(pod.Status.Phase),
+			}
+
+			return podModel
+		})
+	}
+
+	return NewDao(db.Debug(), gvr, namespaced, cm.extraInfo, nil)
+}
+
+type Pod struct {
+	DynamicModel `gorm:"embedded"`
+	Phase        string `gorm:"column:Phase"`
 }

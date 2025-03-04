@@ -1,0 +1,375 @@
+# multi-namespace-test-data.yaml
+# Test data covering multiple namespaces with common Kubernetes resources
+
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: production
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: staging
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: monitoring
+---
+# Production Namespace Resources
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web-frontend
+  namespace: production
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: web
+  template:
+    metadata:
+      labels:
+        app: web
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:alpine
+        ports:
+        - containerPort: 80
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: web-service
+  namespace: production
+spec:
+  type: ClusterIP
+  ports:
+  - port: 80
+    targetPort: 80
+  selector:
+    app: web
+---
+# Staging Namespace Resources
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: stage-backend
+  namespace: staging
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: backend
+  template:
+    metadata:
+      labels:
+        app: backend
+    spec:
+      containers:
+      - name: alpine
+        image: alpine:latest
+        command: ["/bin/sh", "-c", "sleep 3600"]
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+  namespace: staging
+data:
+  config.properties: |
+    debug_mode=true
+    max_connections=50
+---
+# Monitoring Namespace Resources
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: monitoring-sa
+  namespace: monitoring
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: metrics-reader
+  namespace: monitoring
+rules:
+- apiGroups: [""]
+  resources: ["pods", "services"]
+  verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: cross-ns-access
+  namespace: monitoring
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: metrics-reader
+subjects:
+- kind: ServiceAccount
+  name: monitoring-sa
+  namespace: monitoring
+---
+# Cross-Namespace Configuration
+apiVersion: v1
+kind: Secret
+metadata:
+  name: db-secret
+  namespace: production
+type: Opaque
+data:
+  password: cHJvZFAhQHNzdzByZA==  # Base64 encoded "prodP@ssw0rd"
+---
+# Batch Job Example
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: data-processor
+  namespace: staging
+spec:
+  template:
+    spec:
+      containers:
+      - name: processor
+        image: alpine:latest
+        command: ["echo", "Processing data..."]
+      restartPolicy: Never
+---
+# CronJob Example
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: daily-cleanup
+  namespace: monitoring
+spec:
+  schedule: "0 3 * * *"
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+          - name: cleaner
+            image: alpine:latest
+            command: ["/bin/sh", "-c", "echo Cleaning old logs..."]
+          restartPolicy: OnFailure
+---
+# Ingress Example
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: web-ingress
+  namespace: production
+spec:
+  rules:
+  - host: example.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: web-service
+            port:
+              number: 80
+---
+# StatefulSet Example
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: cache
+  namespace: production
+spec:
+  serviceName: "cache"
+  replicas: 2
+  selector:
+    matchLabels:
+      app: cache
+  template:
+    metadata:
+      labels:
+        app: cache
+    spec:
+      containers:
+      - name: alpine
+        image: alpine:latest
+        command: ["/bin/sh", "-c", "sleep 3600"]
+---
+# Additional Production Resources
+apiVersion: v1
+kind: Service
+metadata:
+  name: cache-service
+  namespace: production
+spec:
+  type: ClusterIP
+  ports:
+  - port: 6379
+    targetPort: 6379
+  selector:
+    app: cache
+
+# 补充DaemonSet部分
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: node-log-collector
+  namespace: monitoring
+  labels:
+    app: log-collector
+spec:
+  selector:
+    matchLabels:
+      app: log-collector
+  template:
+    metadata:
+      labels:
+        app: log-collector
+    spec:
+      containers:
+      - name: log-agent
+        image: alpine:latest
+        command: ["/bin/sh", "-c", "tail -F /var/log/*.log"]
+        volumeMounts:
+        - name: varlog
+          mountPath: /var/log
+      volumes:
+      - name: varlog
+        hostPath:
+          path: /var/log
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: nginx-ingress
+  namespace: production
+  labels:
+    app: edge-proxy
+spec:
+  selector:
+    matchLabels:
+      app: edge-proxy
+  template:
+    metadata:
+      labels:
+        app: edge-proxy
+    spec:
+      containers:
+      - name: nginx-proxy
+        image: nginx:alpine
+        ports:
+        - containerPort: 80
+          hostPort: 80
+        volumeMounts:
+        - name: proxy-config
+          mountPath: /etc/nginx/nginx.conf
+          subPath: nginx.conf
+      volumes:
+      - name: proxy-config
+        configMap:
+          name: nginx-config
+---
+# 新增关联的ConfigMap（添加到production命名空间）
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nginx-config
+  namespace: production
+data:
+  nginx.conf: |
+    events {}
+    http {
+      server {
+        listen 80;
+        location / {
+          proxy_pass http://web-service.production.svc.cluster.local;
+        }
+      }
+    }
+
+# 补充PV和IngressClass部分
+---
+# PersistentVolume定义（集群级别资源）
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: local-pv-1
+spec:
+  capacity:
+    storage: 5Gi
+  accessModes:
+  - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: local-storage
+  local:
+    path: /mnt/data
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+      - matchExpressions:
+        - key: kubernetes.io/hostname
+          operator: In
+          values:
+          - node-01
+
+---
+# StorageClass定义（如需）
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: local-storage
+provisioner: kubernetes.io/no-provisioner
+volumeBindingMode: WaitForFirstConsumer
+
+---
+# 更新已有的PVC（staging命名空间）
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: data-pvc
+  namespace: staging
+spec:
+  storageClassName: local-storage
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+
+---
+# IngressClass定义（集群级别资源）
+apiVersion: networking.k8s.io/v1
+kind: IngressClass
+metadata:
+  name: nginx-example
+spec:
+  controller: nginx.org/ingress-controller
+  parameters:
+    apiGroup: k8s.nginx.org
+    kind: IngressController
+    name: nginx
+
+---
+# 更新已有的Ingress（production命名空间）
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: web-ingress
+  namespace: production
+spec:
+  ingressClassName: nginx-example
+  rules:
+  - host: example.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: web-service
+            port:
+              number: 80

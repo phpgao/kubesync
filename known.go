@@ -48,6 +48,12 @@ var (
 		Resource: "events",
 	}
 
+	K8sV1Event = schema.GroupVersionResource{
+		Group:    "events.k8s.io",
+		Version:  "v1",
+		Resource: "events",
+	}
+
 	CoreV1PersistentVolume = schema.GroupVersionResource{
 		Group:    "",
 		Version:  "v1",
@@ -85,6 +91,11 @@ var (
 		Group:    "apps",
 		Version:  "v1",
 		Resource: "replicasets",
+	}
+	AppsV1ControllerRevision = schema.GroupVersionResource{
+		Group:    "apps",
+		Version:  "v1",
+		Resource: "controllerrevisions",
 	}
 )
 
