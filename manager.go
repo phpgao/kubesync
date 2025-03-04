@@ -29,7 +29,6 @@ type ControllerManager struct {
 	controllers   map[schema.GroupVersionResource]*Controller
 	handlerMap    sync.Map
 	needUpdateMap sync.Map
-	uniqueFuncMap sync.Map
 	blacklist     map[schema.GroupVersionResource]struct{}
 	blacklistMu   sync.RWMutex
 	dependencyMap map[schema.GroupVersionResource][]schema.GroupVersionResource
@@ -37,6 +36,8 @@ type ControllerManager struct {
 	daoMap        map[schema.GroupVersionResource][]ResourceStorage
 	daoMu         sync.RWMutex
 	defaultDao    []ResourceStorage
+	extraInfo     map[string]string
+	InClusterMode bool
 }
 
 func NewControllerManager(config *rest.Config) *ControllerManager {
@@ -47,6 +48,7 @@ func NewControllerManager(config *rest.Config) *ControllerManager {
 		needUpdateMap: sync.Map{},
 		blacklist:     make(map[schema.GroupVersionResource]struct{}),
 		dependencyMap: make(map[schema.GroupVersionResource][]schema.GroupVersionResource),
+		extraInfo:     map[string]string{},
 	}
 }
 
@@ -125,17 +127,6 @@ func (cm *ControllerManager) GetDependency(gvr schema.GroupVersionResource) []sc
 
 func (cm *ControllerManager) RegisterNeedUpdate(gvr schema.GroupVersionResource, handler NeedUpdateFunc) {
 	cm.handlerMap.Store(gvr, handler)
-}
-
-func (cm *ControllerManager) RegisterUniqueFunc(gvr schema.GroupVersionResource, handler UniqueFunc) {
-	cm.uniqueFuncMap.Store(gvr, handler)
-}
-
-func (cm *ControllerManager) GetUniqueFunc(gvr schema.GroupVersionResource) UniqueFunc {
-	if handler, ok := cm.uniqueFuncMap.Load(gvr); ok {
-		return handler.(UniqueFunc)
-	}
-	return DefaultUniqueFunc
 }
 
 func (cm *ControllerManager) GetNeedUpdate(gvr schema.GroupVersionResource) NeedUpdateFunc {

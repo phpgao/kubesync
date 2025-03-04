@@ -23,7 +23,7 @@ const (
 type (
 	HandlerFunc    func(context.Context, *Controller, string, *unstructured.Unstructured) error
 	NeedUpdateFunc func(*unstructured.Unstructured, *unstructured.Unstructured) bool
-	UniqueFunc     func(*unstructured.Unstructured, bool) string
+	EventHandler   func(ctx context.Context, ctrl *Controller, obj *unstructured.Unstructured) error
 )
 
 func main() {

@@ -7,11 +7,11 @@ import (
 
 	"gorm.io/gorm"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 )
 
 type Unstructured interface {
 	ToUnstructured() (*unstructured.Unstructured, error)
+	UniqueKey() string
 	TableName() string
 }
 
@@ -26,6 +26,10 @@ type NamespacedDynamicModel struct {
 // TableName 动态生成表名，格式: gvk_group_version_kind
 func (dm *NamespacedDynamicModel) TableName() string {
 	return dm.Resource
+}
+
+func (dm *NamespacedDynamicModel) UniqueKey() string {
+	return fmt.Sprintf("%s-%s-%s-%s", dm.Namespace, dm.Name, dm.ClusterID, dm.TenantID)
 }
 
 // DynamicModel 基础模型，包含通用字段
@@ -44,6 +48,10 @@ func (dm *DynamicModel) TableName() string {
 	return dm.Resource
 }
 
+func (dm *DynamicModel) UniqueKey() string {
+	return fmt.Sprintf("%s-%s-%s", dm.Name, dm.ClusterID, dm.TenantID)
+}
+
 func (dm *DynamicModel) ToUnstructured() (*unstructured.Unstructured, error) {
 	if dm.Raw == "" {
 		utd := &unstructured.Unstructured{}
@@ -58,12 +66,14 @@ func (dm *DynamicModel) ToUnstructured() (*unstructured.Unstructured, error) {
 }
 
 type ResourceStorage interface {
-	AutoMigrate(context.Context, schema.GroupVersionResource, bool) error
-	Find(context.Context, schema.GroupVersionResource, bool, string, string) (*unstructured.Unstructured, error)
-	Save(context.Context, schema.GroupVersionResource, bool, *unstructured.Unstructured) error
-	Create(context.Context, schema.GroupVersionResource, bool, *unstructured.Unstructured) error
-	Delete(context.Context, schema.GroupVersionResource, bool, *unstructured.Unstructured) error
+	AutoMigrate(context.Context) error
+	Find(context.Context, string, string) (*unstructured.Unstructured, error)
+	Save(context.Context, *unstructured.Unstructured) error
+	Create(context.Context, *unstructured.Unstructured) error
+	Delete(context.Context, *unstructured.Unstructured) error
 	// NeedUpdate returns true if the object needs to be updated
 	// It's Useful for update new field
-	NeedUpdate(ctx context.Context, gvr schema.GroupVersionResource, namespaced bool, new *unstructured.Unstructured, old *unstructured.Unstructured) bool
+	// in this function you need to compare the new object and the old data in db
+	// if the new object is different from the old data in db, return true
+	NeedUpdate(ctx context.Context, new *unstructured.Unstructured, old any) bool
 }

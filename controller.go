@@ -31,6 +31,7 @@ type Controller struct {
 	dependency []schema.GroupVersionResource
 	ready      bool
 	dao        []ResourceStorage
+	baby       *Base
 }
 
 func generateKey(action string, obj metav1.Object) string {
@@ -112,7 +113,7 @@ func (c *Controller) onDelete(obj interface{}) {
 func (c *Controller) Run(ctx context.Context) {
 
 	for _, dao := range c.dao {
-		err := dao.AutoMigrate(ctx, c.gvr, c.namespaced)
+		err := dao.AutoMigrate(ctx)
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -168,8 +169,17 @@ func (c *Controller) processNextItem() bool {
 		c.queue.AddRateLimited(key)
 		return true
 	}
-
-	err = c.handler(context.Background(), c, action, obj.(*unstructured.Unstructured))
+	ctx := context.Background()
+	switch action {
+	case ActionAdd:
+		err = c.baby.OnAdd(ctx, c, obj.(*unstructured.Unstructured))
+	case ActionUpdate:
+		err = c.baby.OnUpdate(ctx, c, obj.(*unstructured.Unstructured))
+	case ActionDelete:
+		err = c.baby.OnDelete(ctx, c, obj.(*unstructured.Unstructured))
+	default:
+		err = fmt.Errorf("unknown action: %s", action)
+	}
 	if err != nil {
 		c.queue.AddRateLimited(key)
 		return true

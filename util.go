@@ -54,7 +54,7 @@ func Handler(ctx context.Context, ctrl *Controller, action string, obj *unstruct
 	switch action {
 	case ActionAdd:
 		for _, dao := range ctrl.dao {
-			err := dao.Create(ctx, ctrl.GetGVR(), ctrl.namespaced, obj)
+			err := dao.Create(ctx, obj)
 			if err != nil {
 				return err
 			}

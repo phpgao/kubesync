@@ -2,104 +2,65 @@ package main
 
 import (
 	"context"
-	"fmt"
-	"log"
 
 	"gorm.io/gorm"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 )
 
-func NewDao(db *gorm.DB) ResourceStorage {
+func NewDao(db *gorm.DB, modelFunc func(*unstructured.Unstructured) Unstructured, extraCondition map[string]any) ResourceStorage {
 	//dsn := "root:fdj68Sbyj4S6QLf@tcp(9.134.107.122:3306)/cmdb?charset=utf8mb4&parseTime=True&loc=Local"
 	//db, err := gorm.Open(mysql.Open(dsn), &gorm.Config{})
 	//if err != nil {
 	//	panic(err)
 	//}
 	return &Dao{
-		db: db,
+		db:             db,
+		modelFunc:      modelFunc,
+		extraCondition: extraCondition,
 	}
 }
 
 type Dao struct {
-	db *gorm.DB
+	db             *gorm.DB
+	modelFunc      func(*unstructured.Unstructured) Unstructured
+	extraCondition map[string]any
+	query          func(context.Context, *gorm.DB, *unstructured.Unstructured) *gorm.DB
+	simpleQuery    func(context.Context, string, string) *gorm.DB
 }
 
-func (d Dao) AutoMigrate(ctx context.Context, gvr schema.GroupVersionResource, namespaced bool) error {
-	if namespaced {
-		model := &NamespacedDynamicModel{
-			DynamicModel: DynamicModel{
-				Version:  gvr.Version,
-				Resource: gvr.Resource,
-			},
-		}
-		// 自动迁移表结构
-		err := d.db.Table(model.TableName()).AutoMigrate(&NamespacedDynamicModel{})
-		if err != nil {
-			log.Println(gvr.String())
-			return fmt.Errorf("auto migrate failed: %v", err)
-		}
-		return nil
-	} else {
-		model := &DynamicModel{
-			Version:  gvr.Version,
-			Resource: gvr.Resource,
-		}
-		// 自动迁移表结构
-		err := d.db.Table(model.TableName()).AutoMigrate(&DynamicModel{})
-		if err != nil {
-			log.Println(gvr.String())
-			return fmt.Errorf("auto migrate failed: %v", err)
-		}
-		return nil
-	}
+func (d Dao) AutoMigrate(ctx context.Context) error {
+	model := d.modelFunc(nil)
+	return d.db.Table(model.TableName()).AutoMigrate(&NamespacedDynamicModel{})
+
 }
 
-func (d Dao) Find(ctx context.Context, resource schema.GroupVersionResource, namespaced bool, namespace string, name string) (*unstructured.Unstructured, error) {
-	model := getModel(resource, namespaced, nil)
-	query := d.db.WithContext(ctx).Table(model.TableName()).Where("name = ?", name)
-	if namespaced {
-		query = query.Where("namespace = ?", namespace)
-	}
-
-	err := query.Find(model).Error
+func (d Dao) Find(ctx context.Context, namespace string, name string) (*unstructured.Unstructured, error) {
+	model := d.modelFunc(nil)
+	err := d.query(ctx, d.db, nil).Where("namespace = ?", namespace).Where("name = ?", name).Find(model).Error
 	if err != nil {
 		return nil, err
 	}
 	return model.ToUnstructured()
 }
 
-func (d Dao) Create(ctx context.Context, resource schema.GroupVersionResource, namespaced bool, object *unstructured.Unstructured) error {
-	model := getModel(resource, namespaced, object)
-	query := d.db.WithContext(ctx).Table(model.TableName()).Where("name = ?", object.GetName())
-	if namespaced {
-		query = query.Where("namespace = ?", object.GetNamespace())
-	}
-
+func (d Dao) Create(ctx context.Context, object *unstructured.Unstructured) error {
+	model := d.modelFunc(object)
+	query := d.db.WithContext(ctx).Table(model.TableName())
 	return query.Create(model).Error
 }
 
-func (d Dao) Save(ctx context.Context, resource schema.GroupVersionResource, namespaced bool, object *unstructured.Unstructured) error {
-	model := getModel(resource, namespaced, object)
-	query := d.db.WithContext(ctx).Table(model.TableName()).Where("name = ?", object.GetName())
-	if namespaced {
-		query = query.Where("namespace = ?", object.GetNamespace())
-	}
-
-	return query.Model(model).Updates(model).Error
+func (d Dao) Save(ctx context.Context, object *unstructured.Unstructured) error {
+	model := d.modelFunc(object)
+	return d.query(ctx, d.db, object).Model(model).Updates(model).Error
 }
 
-func (d Dao) Delete(ctx context.Context, resource schema.GroupVersionResource, namespaced bool, object *unstructured.Unstructured) error {
-	model := getModel(resource, namespaced, object)
-	query := d.db.WithContext(ctx).Table(model.TableName()).Where("name = ?", object.GetName())
-	if namespaced {
-		query = query.Where("namespace = ?", object.GetNamespace())
-	}
-
-	return query.Model(model).Delete(model).Error
+func (d Dao) Delete(ctx context.Context, object *unstructured.Unstructured) error {
+	model := d.modelFunc(object)
+	return d.query(ctx, d.db, object).Delete(model).Error
 }
 
-func (d Dao) NeedUpdate(ctx context.Context, gvr schema.GroupVersionResource, namespaced bool, new *unstructured.Unstructured, old *unstructured.Unstructured) bool {
+func (d Dao) NeedUpdate(ctx context.Context, new *unstructured.Unstructured, old any) bool {
 	return true
 }
 
